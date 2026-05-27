@@ -612,8 +612,12 @@ $fullMarkdown = $pageResults.ToArray() -join "`n`n"
 
 Write-Progress -Id 0 -Activity $progressActivity -Completed
 
-# Write to stdout
-Write-Output $fullMarkdown
+# Write to stdout unless -ToClipboard is specified.
+# When -ToClipboard is used, suppress stdout to prevent external tools (like Greenshot)
+# from parsing URLs in the markdown and treating them as navigation destinations.
+if (-not $ToClipboard) {
+    Write-Output $fullMarkdown
+}
 
 # Write to file if requested (UTF-8 without BOM for cross-tool compatibility)
 if (-not [string]::IsNullOrEmpty($OutputPath)) {
