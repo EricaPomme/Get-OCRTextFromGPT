@@ -356,6 +356,7 @@ function Test-IsChatScreenshot {
             -Models $Models `
             -MaxTokens 50 `
             -Messages $classifyMessages
+        if ($null -eq $result.Content) { return $false }
         return ($result.Content.Trim().ToUpper() -like 'YES*')
     }
     catch {
