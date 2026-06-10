@@ -48,17 +48,18 @@
     variable is used.
 
 .PARAMETER Model
-    Optional. The model to use via OpenRouter. Defaults to 'openai/gpt-5.5:azure-zdr'.
-    Must support vision (image) inputs. Ignored when -Models is specified.
+    Optional. A single model ID to use via OpenRouter. Must support vision
+    (image) inputs. Overrides -Models when specified.
 
 .PARAMETER Models
-    Optional. An array of model IDs for OpenRouter to route between. When specified,
-    OpenRouter selects the best available model based on -SortBy. Overrides -Model.
+    Optional. An array of model IDs for OpenRouter to try in order. The first
+    available model is used; others serve as fallbacks. Defaults to Gemini 3.1 Pro,
+    Claude Sonnet 4.6, Gemini 2.5 Pro, and GPT-5.5. Ignored when -Model is used
+    instead.
 
-.PARAMETER SortBy
-    Optional. Routing preference when using -Models. Valid values: 'price', 'latency',
-    'throughput'. Defaults to 'price' (least expensive). Ignored when -Model is used
-    instead of -Models.
+.PARAMETER Cheapest
+    Optional. Route to the least expensive model from -Models instead of using
+    the first available. Ignored when -Model is used instead of -Models.
 
 .PARAMETER MaxTokens
     Optional. Maximum tokens in the model response per page. Defaults to 4096.
@@ -116,9 +117,15 @@
     "John Doe" instead of the default "You" label.
 
 .EXAMPLE
-    .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png -Models "openai/gpt-5.5", "openai/gpt-4o", "anthropic/claude-sonnet-4" -SortBy price
+    .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png
 
-    Routes to the least expensive vision model among the specified options via OpenRouter.
+    Routes to the best available model using the default model list
+    (Gemini 3.1 Pro, Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.5).
+
+.EXAMPLE
+    .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png -Models "openai/gpt-5.5", "anthropic/claude-sonnet-4"
+
+    Routes to the first available model among the specified options via OpenRouter.
 
 .NOTES
     Requires an OpenRouter API key with access to a vision-capable model.
@@ -138,14 +145,18 @@ param(
     [string]$ApiKey,
 
     [Parameter()]
-    [string]$Model = 'openai/gpt-5.5:azure-zdr',
+    [string]$Model,
 
     [Parameter()]
-    [string[]]$Models,
+    [string[]]$Models = @(
+        'google/gemini-3.1-pro'
+        'anthropic/claude-sonnet-4.6'
+        'google/gemini-2.5-pro'
+        'openai/gpt-5.5'
+    ),
 
     [Parameter()]
-    [ValidateSet('price', 'latency', 'throughput')]
-    [string]$SortBy = 'price',
+    [switch]$Cheapest,
 
     [Parameter()]
     [int]$MaxTokens = 4096,
@@ -179,13 +190,12 @@ function Invoke-OpenRouterChat {
     <#
     .SYNOPSIS
         Sends a messages array to the OpenRouter Chat Completions API and returns
-        the assistant's response text. Throws on any HTTP error.
+        a hashtable with Content, Model, and Cost. Throws on any HTTP error.
     #>
     param(
         [string]$ApiKey,
         [string]$Model,
         [string[]]$Models,
-        [string]$SortBy,
         [int]$MaxTokens,
         [bool]$IsGpt5,
         [array]$Messages
@@ -214,10 +224,10 @@ function Invoke-OpenRouterChat {
         zdr = $true
     }
 
-    # Add sort preference when using models array
-    if ($Models -and $Models.Count -gt 0 -and $SortBy) {
+    # Sort by price when -Cheapest is set; otherwise OpenRouter tries models in order
+    if ($Cheapest -and $Models -and $Models.Count -gt 0) {
         $provider['sort'] = @{
-            by        = $SortBy
+            by        = 'price'
             partition = 'none'
         }
     }
@@ -279,7 +289,14 @@ function Invoke-OpenRouterChat {
         }
     }
 
-    return $response.choices[0].message.content
+    $cost = 0
+    if ($response.usage.cost) { $cost = [double]$response.usage.cost }
+
+    return @{
+        Content = $response.choices[0].message.content
+        Model   = $response.model
+        Cost    = $cost
+    }
 }
 
 function Test-IsChatScreenshot {
@@ -293,7 +310,6 @@ function Test-IsChatScreenshot {
         [string]$ApiKey,
         [string]$Model,
         [string[]]$Models,
-        [string]$SortBy,
         [bool]$IsGpt5,
         [string]$Base64Image,
         [string]$Detail
@@ -319,15 +335,14 @@ function Test-IsChatScreenshot {
     )
 
     try {
-        $answer = Invoke-OpenRouterChat `
+        $result = Invoke-OpenRouterChat `
             -ApiKey $ApiKey `
             -Model $Model `
             -Models $Models `
-            -SortBy $SortBy `
-            -MaxTokens 50 `
+                -MaxTokens 50 `
             -IsGpt5 $IsGpt5 `
             -Messages $classifyMessages
-        return ($answer.Trim().ToUpper() -like 'YES*')
+        return ($result.Content.Trim().ToUpper() -like 'YES*')
     }
     catch {
         Write-Verbose "Chat auto-detection failed, defaulting to document mode: $_"
@@ -361,7 +376,7 @@ Write-Progress -Id 0 -Activity 'Converting document to markdown' `
 Add-Type -AssemblyName System.Drawing
 
 # Determine model characteristics once for all pages
-$effectiveModels = if ($Models -and $Models.Count -gt 0) { $Models } else { @($Model) }
+$effectiveModels = if (-not [string]::IsNullOrEmpty($Model)) { @($Model) } elseif ($Models -and $Models.Count -gt 0) { $Models } else { @($Model) }
 $isGpt5 = Test-IsGpt5Model -ModelNames $effectiveModels
 $detail = Get-ImageDetail -ModelNames $effectiveModels
 Write-Verbose "Model(s): $($effectiveModels -join ', ') | GPT-5 parameter set: $isGpt5 | Image detail: $detail"
@@ -383,7 +398,6 @@ else {
         -ApiKey $ApiKey `
         -Model $Model `
         -Models $Models `
-        -SortBy $SortBy `
         -IsGpt5 $isGpt5 `
         -Base64Image $firstImageB64 `
         -Detail $detail
@@ -419,6 +433,7 @@ $messages.Add(@{
 $pageResults = [System.Collections.Generic.List[string]]::new()
 $pageIndex = 0
 $totalImages = $Images.Count
+$totalCost = 0.0
 
 foreach ($imagePath in $Images) {
     $pageIndex++
@@ -478,15 +493,18 @@ foreach ($imagePath in $Images) {
     Write-Progress -Id 1 -ParentId 0 -Activity $fileName `
         -Status 'Calling OpenRouter API (this may take a moment)...' -PercentComplete 66
 
-    $pageMarkdown = Invoke-OpenRouterChat `
+    $result = Invoke-OpenRouterChat `
         -ApiKey $ApiKey `
         -Model $Model `
         -Models $Models `
-        -SortBy $SortBy `
         -MaxTokens $MaxTokens `
         -IsGpt5 $isGpt5 `
         -Messages $messages.ToArray()
 
+    Write-Verbose "Page $pageIndex | Selected: $($result.Model) | Cost: $('{0:N4}' -f $result.Cost) USD"
+    $totalCost += $result.Cost
+
+    $pageMarkdown = $result.Content
     $pageMarkdown = ConvertFrom-CodeFence -Text $pageMarkdown
     $pageMarkdown = ConvertTo-AsciiPunctuation -Text $pageMarkdown
 
@@ -505,6 +523,8 @@ foreach ($imagePath in $Images) {
 $fullMarkdown = $pageResults.ToArray() -join "`n`n"
 
 Write-Progress -Id 0 -Activity $progressActivity -Completed
+
+Write-Verbose "Total cost: $('{0:N4}' -f $totalCost) USD"
 
 # Write to stdout unless -ToClipboard is specified.
 # When -ToClipboard is used, suppress stdout to prevent external tools (like Greenshot)
