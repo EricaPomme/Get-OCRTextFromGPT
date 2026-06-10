@@ -57,6 +57,12 @@
     Discord, etc.) and you want to skip the auto-detection API call. Auto-detection
     runs by default on the first image; -ChatMode bypasses that step.
 
+.PARAMETER Speaker
+    Optional. Specifies the name of the local user in chat transcripts. When
+    provided, messages that would normally be labeled "You" are instead labeled
+    with this name (e.g. "John Doe" instead of "You"). Only applies in chat
+    mode. Ignored when processing documents.
+
 .PARAMETER ToClipboard
     Optional. Copies the final markdown output to the system clipboard in addition
     to writing it to stdout.
@@ -91,6 +97,12 @@
     Converts all PNG files in the current folder, sorted by name, as pages of
     one document.
 
+.EXAMPLE
+    .\Get-OCRTextFromGPT.ps1 teams-p1.png, teams-p2.png -ChatMode -Speaker "John Doe"
+
+    Forces chat transcript mode and attributes messages from the local user to
+    "John Doe" instead of the default "You" label.
+
 .NOTES
     Requires an OpenAI API key with access to a vision-capable model.
     Requires System.Drawing, which is available on all Windows systems with
@@ -116,6 +128,9 @@ param(
 
     [Parameter()]
     [switch]$ChatMode,
+
+    [Parameter()]
+    [string]$Speaker,
 
     [Parameter()]
     [switch]$ToClipboard
@@ -594,6 +609,12 @@ if ($useChatMode) {
         $today.AddDays(-1).ToString('yyyy-MM-dd'), `
         $today.Year.ToString(), `
         $today.ToString('h:mm tt').ToLower()
+    if (-not [string]::IsNullOrEmpty($Speaker)) {
+        $activeSystemPrompt += @"
+
+SPEAKER OVERRIDE: The local user's name is "$Speaker". Replace all occurrences of "You" as a speaker name with "$Speaker" throughout the transcript. For example, "**You** (2025-06-10 3:15 pm)" becomes "**$Speaker** (2025-06-10 3:15 pm)". Do not change "you" when it appears as a regular word inside message content.
+"@
+    }
     $progressActivity = 'Converting chat to transcript'
 }
 else {
