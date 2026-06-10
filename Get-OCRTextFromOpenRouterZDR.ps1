@@ -10,7 +10,8 @@
 
     This script supports the same functionality as Get-OCRTextFromGPT but is designed
     to work with OpenRouter's API, which provides access to various models including
-    GPT-5.5 via Azure with Zero Data Retention (ZDR).
+    Gemini and Claude via Azure with Zero Data Retention (ZDR).
+    Note: GPT-5.5 support is not yet available on OpenRouter.
 
     Multiple images are treated as sequential pages of one document (or sequential
     scrolls of one conversation). Conversation context is carried forward so the
@@ -54,7 +55,7 @@
 .PARAMETER Models
     Optional. An array of model IDs for OpenRouter to try in order. The first
     available model is used; others serve as fallbacks. Defaults to Gemini 3.1 Pro
-    Preview, Claude Sonnet 4.6, Gemini 2.5 Pro, and GPT-5.5. Ignored when -Model
+    Preview, Claude Sonnet 4.6, and Gemini 2.5 Pro. Ignored when -Model
     is used instead.
 
 .PARAMETER Cheapest
@@ -120,12 +121,13 @@
     .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png
 
     Routes to the best available model using the default model list
-    (Gemini 3.1 Pro Preview, Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.5).
+    (Gemini 3.1 Pro Preview, Claude Sonnet 4.6, Gemini 2.5 Pro).
 
 .EXAMPLE
     .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png -Models "openai/gpt-5.5", "anthropic/claude-sonnet-4"
 
     Routes to the first available model among the specified options via OpenRouter.
+    Note: GPT-5.5 is not yet available on OpenRouter.
 
 .NOTES
     Requires an OpenRouter API key with access to a vision-capable model.
@@ -152,7 +154,7 @@ param(
         'google/gemini-3.1-pro-preview'
         'anthropic/claude-sonnet-4.6'
         'google/gemini-2.5-pro'
-        'openai/gpt-5.5'
+        # 'openai/gpt-5.5' - not yet available on OpenRouter
     ),
 
     [Parameter()]
