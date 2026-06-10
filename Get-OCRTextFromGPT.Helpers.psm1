@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:SupportedExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.webp')
+$script:PromptsCache = $null
 
 function Test-ImageFile {
     <#
