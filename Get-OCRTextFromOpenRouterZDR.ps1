@@ -1,12 +1,16 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Converts one or more document or chat images to markdown using the OpenAI Vision API.
+    Converts one or more document or chat images to markdown using the OpenRouter API.
 
 .DESCRIPTION
-    Get-OCRTextFromGPT accepts one or more image files (PNG, JPEG, GIF, or WebP),
-    sends them to an OpenAI chat completions model with vision support, and returns
+    Get-OCRTextFromOpenRouter accepts one or more image files (PNG, JPEG, GIF, or WebP),
+    sends them to a vision-capable model via the OpenRouter API, and returns
     the extracted content as a single markdown document or chat transcript.
+
+    This script supports the same functionality as Get-OCRTextFromGPT but is designed
+    to work with OpenRouter's API, which provides access to various models including
+    GPT-5.5 via Azure with Zero Data Retention (ZDR).
 
     Multiple images are treated as sequential pages of one document (or sequential
     scrolls of one conversation). Conversation context is carried forward so the
@@ -27,9 +31,8 @@
 
     Privacy: All images are re-encoded as PNG before transmission to strip EXIF
     metadata (GPS coordinates, device identifiers, timestamps). The API request
-    sets store=false and includes X-OpenAI-No-Store and X-Stainless-* privacy
-    headers. A 30-day safety/abuse retention window still applies on OpenAI's
-    servers and cannot be eliminated via API parameters alone. See the README for
+    uses Zero Data Retention (ZDR) when available. Note that a 30-day safety/abuse
+    retention window may still apply on provider servers. See the README for
     full details.
 
 .PARAMETER Images
@@ -41,12 +44,21 @@
     UTF-8 (no BOM) in addition to being written to stdout.
 
 .PARAMETER ApiKey
-    Optional. OpenAI API key. If not provided, the OPENAI_API_KEY environment
+    Optional. OpenRouter API key. If not provided, the OPENROUTER_API_KEY environment
     variable is used.
 
 .PARAMETER Model
-    Optional. The OpenAI model to use. Defaults to gpt-5.5. Must support vision
-    (image) inputs. GPT-5.x and GPT-4o variants are supported.
+    Optional. The model to use via OpenRouter. Defaults to 'openai/gpt-5.5:azure-zdr'.
+    Must support vision (image) inputs. Ignored when -Models is specified.
+
+.PARAMETER Models
+    Optional. An array of model IDs for OpenRouter to route between. When specified,
+    OpenRouter selects the best available model based on -SortBy. Overrides -Model.
+
+.PARAMETER SortBy
+    Optional. Routing preference when using -Models. Valid values: 'price', 'latency',
+    'throughput'. Defaults to 'price' (least expensive). Ignored when -Model is used
+    instead of -Models.
 
 .PARAMETER MaxTokens
     Optional. Maximum tokens in the model response per page. Defaults to 4096.
@@ -68,23 +80,23 @@
     to writing it to stdout.
 
 .EXAMPLE
-    .\Get-OCRTextFromGPT.ps1 -Images teams-screenshot.png -ChatMode
+    .\Get-OCRTextFromOpenRouter.ps1 -Images teams-screenshot.png -ChatMode
 
     Forces chat transcript mode for a Teams screenshot, skipping auto-detection.
 
 .EXAMPLE
-    .\Get-OCRTextFromGPT.ps1 teams-p1.png, teams-p2.png -OutputPath transcript.md
+    .\Get-OCRTextFromOpenRouter.ps1 teams-p1.png, teams-p2.png -OutputPath transcript.md
 
     Auto-detects two sequential chat screenshots as a conversation and writes the
     combined transcript to transcript.md.
 
 .EXAMPLE
-    .\Get-OCRTextFromGPT.ps1 scan.png
+    .\Get-OCRTextFromOpenRouter.ps1 scan.png
 
     Converts a single image to markdown and writes it to stdout.
 
 .EXAMPLE
-    .\Get-OCRTextFromGPT.ps1 page1.jpg, page2.jpg, page3.jpg -OutputPath report.md
+    .\Get-OCRTextFromOpenRouter.ps1 page1.jpg, page2.jpg, page3.jpg -OutputPath report.md
 
     Converts three pages of a scanned document and writes the combined result to
     report.md as well as stdout.
@@ -92,19 +104,24 @@
 .EXAMPLE
     $pages = Get-ChildItem *.png | Sort-Object Name |
              Select-Object -ExpandProperty FullName
-    .\Get-OCRTextFromGPT.ps1 -Images $pages -OutputPath combined.md
+    .\Get-OCRTextFromOpenRouter.ps1 -Images $pages -OutputPath combined.md
 
     Converts all PNG files in the current folder, sorted by name, as pages of
     one document.
 
 .EXAMPLE
-    .\Get-OCRTextFromGPT.ps1 teams-p1.png, teams-p2.png -ChatMode -Speaker "John Doe"
+    .\Get-OCRTextFromOpenRouter.ps1 teams-p1.png, teams-p2.png -ChatMode -Speaker "John Doe"
 
     Forces chat transcript mode and attributes messages from the local user to
     "John Doe" instead of the default "You" label.
 
+.EXAMPLE
+    .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png -Models "openai/gpt-5.5", "openai/gpt-4o", "anthropic/claude-sonnet-4" -SortBy price
+
+    Routes to the least expensive vision model among the specified options via OpenRouter.
+
 .NOTES
-    Requires an OpenAI API key with access to a vision-capable model.
+    Requires an OpenRouter API key with access to a vision-capable model.
     Requires System.Drawing, which is available on all Windows systems with
     .NET Framework 4.x (included with PowerShell 5.1).
 #>
@@ -121,7 +138,14 @@ param(
     [string]$ApiKey,
 
     [Parameter()]
-    [string]$Model = 'gpt-5.5',
+    [string]$Model = 'openai/gpt-5.5:azure-zdr',
+
+    [Parameter()]
+    [string[]]$Models,
+
+    [Parameter()]
+    [ValidateSet('price', 'latency', 'throughput')]
+    [string]$SortBy = 'price',
 
     [Parameter()]
     [int]$MaxTokens = 4096,
@@ -151,15 +175,17 @@ $Prompts = Get-Prompts
 # Functions
 # ---------------------------------------------------------------------------
 
-function Invoke-OpenAIChat {
+function Invoke-OpenRouterChat {
     <#
     .SYNOPSIS
-        Sends a messages array to the OpenAI Chat Completions API and returns
+        Sends a messages array to the OpenRouter Chat Completions API and returns
         the assistant's response text. Throws on any HTTP error.
     #>
     param(
         [string]$ApiKey,
         [string]$Model,
+        [string[]]$Models,
+        [string]$SortBy,
         [int]$MaxTokens,
         [bool]$IsGpt5,
         [array]$Messages
@@ -167,18 +193,36 @@ function Invoke-OpenAIChat {
 
     $headers = @{
         'Authorization'               = "Bearer $ApiKey"
-        'X-OpenAI-No-Store'           = 'true'
-        'X-Stainless-OS'              = 'private'
-        'X-Stainless-Arch'            = 'private'
-        'X-Stainless-Runtime'         = 'private'
-        'X-Stainless-Runtime-Version' = 'private'
+        'HTTP-Referer'                = 'https://github.com/erica/Get-OCRTextFromGPT'
+        'X-Title'                     = 'Get-OCRTextFromOpenRouter'
     }
 
     $body = [ordered]@{
-        model    = $Model
-        store    = $false
         messages = $Messages
     }
+
+    # Use models array for routing, or single model
+    if ($Models -and $Models.Count -gt 0) {
+        $body['models'] = $Models
+    }
+    else {
+        $body['model'] = $Model
+    }
+
+    # Add ZDR and routing preferences
+    $provider = @{
+        zdr = $true
+    }
+
+    # Add sort preference when using models array
+    if ($Models -and $Models.Count -gt 0 -and $SortBy) {
+        $provider['sort'] = @{
+            by        = $SortBy
+            partition = 'none'
+        }
+    }
+
+    $body['provider'] = $provider
 
     if ($IsGpt5) {
         $body['max_completion_tokens'] = $MaxTokens
@@ -192,7 +236,7 @@ function Invoke-OpenAIChat {
 
     try {
         $response = Invoke-RestMethod `
-            -Uri 'https://api.openai.com/v1/chat/completions' `
+            -Uri 'https://openrouter.ai/api/v1/chat/completions' `
             -Method Post `
             -Headers $headers `
             -Body $jsonBody `
@@ -210,7 +254,7 @@ function Invoke-OpenAIChat {
             }
         }
 
-        # Attempt to read the response body for OpenAI's error message
+        # Attempt to read the response body for OpenRouter's error message
         if ($null -ne $ex.Response) {
             try {
                 $stream = $ex.Response.GetResponseStream()
@@ -225,13 +269,13 @@ function Invoke-OpenAIChat {
         }
 
         if ($statusCode -and $errorDetail) {
-            throw "OpenAI API request failed (HTTP $statusCode): $errorDetail"
+            throw "OpenRouter API request failed (HTTP $statusCode): $errorDetail"
         }
         elseif ($statusCode) {
-            throw "OpenAI API request failed (HTTP $statusCode)"
+            throw "OpenRouter API request failed (HTTP $statusCode)"
         }
         else {
-            throw "OpenAI API request failed: $_"
+            throw "OpenRouter API request failed: $_"
         }
     }
 
@@ -248,6 +292,8 @@ function Test-IsChatScreenshot {
     param(
         [string]$ApiKey,
         [string]$Model,
+        [string[]]$Models,
+        [string]$SortBy,
         [bool]$IsGpt5,
         [string]$Base64Image,
         [string]$Detail
@@ -273,9 +319,11 @@ function Test-IsChatScreenshot {
     )
 
     try {
-        $answer = Invoke-OpenAIChat `
+        $answer = Invoke-OpenRouterChat `
             -ApiKey $ApiKey `
             -Model $Model `
+            -Models $Models `
+            -SortBy $SortBy `
             -MaxTokens 50 `
             -IsGpt5 $IsGpt5 `
             -Messages $classifyMessages
@@ -293,10 +341,10 @@ function Test-IsChatScreenshot {
 
 # Resolve API key
 if ([string]::IsNullOrEmpty($ApiKey)) {
-    $ApiKey = $env:OPENAI_API_KEY
+    $ApiKey = $env:OPENROUTER_API_KEY
 }
 if ([string]::IsNullOrEmpty($ApiKey)) {
-    throw 'No API key provided. Set the OPENAI_API_KEY environment variable or use the -ApiKey parameter.'
+    throw 'No API key provided. Set the OPENROUTER_API_KEY environment variable or use the -ApiKey parameter.'
 }
 
 # Validate all image files before making any API calls
@@ -313,9 +361,10 @@ Write-Progress -Id 0 -Activity 'Converting document to markdown' `
 Add-Type -AssemblyName System.Drawing
 
 # Determine model characteristics once for all pages
-$isGpt5 = Test-IsGpt5Model -ModelNames @($Model)
-$detail = Get-ImageDetail -ModelNames @($Model)
-Write-Verbose "Model: $Model | GPT-5 parameter set: $isGpt5 | Image detail: $detail"
+$effectiveModels = if ($Models -and $Models.Count -gt 0) { $Models } else { @($Model) }
+$isGpt5 = Test-IsGpt5Model -ModelNames $effectiveModels
+$detail = Get-ImageDetail -ModelNames $effectiveModels
+Write-Verbose "Model(s): $($effectiveModels -join ', ') | GPT-5 parameter set: $isGpt5 | Image detail: $detail"
 
 # Determine which system prompt to use; auto-detect chat screenshots unless -ChatMode is set
 $useChatMode = $false
@@ -333,6 +382,8 @@ else {
     $useChatMode = Test-IsChatScreenshot `
         -ApiKey $ApiKey `
         -Model $Model `
+        -Models $Models `
+        -SortBy $SortBy `
         -IsGpt5 $isGpt5 `
         -Base64Image $firstImageB64 `
         -Detail $detail
@@ -415,7 +466,7 @@ foreach ($imagePath in $Images) {
                 type      = 'image_url'
                 image_url = @{
                     url    = "data:image/png;base64,$b64"
-                    detail = $detail
+                    detail = $Detail
                 }
             }
         )
@@ -425,11 +476,13 @@ foreach ($imagePath in $Images) {
     Write-Verbose "Processing image $pageIndex of $($totalImages): $imagePath"
 
     Write-Progress -Id 1 -ParentId 0 -Activity $fileName `
-        -Status 'Calling OpenAI API (this may take a moment)...' -PercentComplete 66
+        -Status 'Calling OpenRouter API (this may take a moment)...' -PercentComplete 66
 
-    $pageMarkdown = Invoke-OpenAIChat `
+    $pageMarkdown = Invoke-OpenRouterChat `
         -ApiKey $ApiKey `
         -Model $Model `
+        -Models $Models `
+        -SortBy $SortBy `
         -MaxTokens $MaxTokens `
         -IsGpt5 $isGpt5 `
         -Messages $messages.ToArray()
