@@ -191,13 +191,15 @@ function Invoke-OpenRouterChat {
     .SYNOPSIS
         Sends a messages array to the OpenRouter Chat Completions API and returns
         a hashtable with Content, Model, and Cost. Throws on any HTTP error.
+        Automatically retries with max_completion_tokens if the first attempt
+        fails due to a max_tokens parameter mismatch (e.g. OpenRouter selected
+        a GPT-5.x or o-series model).
     #>
     param(
         [string]$ApiKey,
         [string]$Model,
         [string[]]$Models,
         [int]$MaxTokens,
-        [bool]$IsGpt5,
         [array]$Messages
     )
 
@@ -234,58 +236,69 @@ function Invoke-OpenRouterChat {
 
     $body['provider'] = $provider
 
-    if ($IsGpt5) {
-        $body['max_completion_tokens'] = $MaxTokens
-    }
-    else {
-        $body['max_tokens'] = $MaxTokens
-        $body['temperature'] = 0.0
-    }
+    # Default to max_tokens; retry with max_completion_tokens on 400 if needed
+    $body['max_tokens'] = $MaxTokens
+    $body['temperature'] = 0.0
 
     $jsonBody = $body | ConvertTo-Json -Depth 10
 
-    try {
-        $response = Invoke-RestMethod `
-            -Uri 'https://openrouter.ai/api/v1/chat/completions' `
-            -Method Post `
-            -Headers $headers `
-            -Body $jsonBody `
-            -ContentType 'application/json'
-    }
-    catch {
-        $ex = $_.Exception
-        $statusCode = $null
-        $errorDetail = ''
+    $response = $null
+    $retried = $false
 
-        # Resolve HTTP status code from the response (works on both PS 5.1 and PS 7)
-        if ($null -ne $ex.Response) {
-            try { $statusCode = [int]$ex.Response.StatusCode } catch {
-                Write-Debug "Could not read HTTP status code: $_"
-            }
+    while ($null -eq $response) {
+        try {
+            $response = Invoke-RestMethod `
+                -Uri 'https://openrouter.ai/api/v1/chat/completions' `
+                -Method Post `
+                -Headers $headers `
+                -Body $jsonBody `
+                -ContentType 'application/json'
         }
+        catch {
+            $ex = $_.Exception
+            $statusCode = $null
+            $errorDetail = ''
 
-        # Attempt to read the response body for OpenRouter's error message
-        if ($null -ne $ex.Response) {
-            try {
-                $stream = $ex.Response.GetResponseStream()
-                $reader = [System.IO.StreamReader]::new($stream)
-                $errorDetail = $reader.ReadToEnd()
-                $reader.Dispose()
-                $stream.Dispose()
+            if ($null -ne $ex.Response) {
+                try { $statusCode = [int]$ex.Response.StatusCode } catch {
+                    Write-Debug "Could not read HTTP status code: $_"
+                }
             }
-            catch {
-                Write-Debug "Could not read response body: $_"
-            }
-        }
 
-        if ($statusCode -and $errorDetail) {
-            throw "OpenRouter API request failed (HTTP $statusCode): $errorDetail"
-        }
-        elseif ($statusCode) {
-            throw "OpenRouter API request failed (HTTP $statusCode)"
-        }
-        else {
-            throw "OpenRouter API request failed: $_"
+            if ($null -ne $ex.Response) {
+                try {
+                    $stream = $ex.Response.GetResponseStream()
+                    $reader = [System.IO.StreamReader]::new($stream)
+                    $errorDetail = $reader.ReadToEnd()
+                    $reader.Dispose()
+                    $stream.Dispose()
+                }
+                catch {
+                    Write-Debug "Could not read response body: $_"
+                }
+            }
+
+            # Retry with max_completion_tokens if the error mentions max_tokens
+            if (-not $retried -and $statusCode -eq 400 -and
+                $errorDetail -match 'max_tokens|max_completion_tokens') {
+                Write-Verbose "Retrying with max_completion_tokens (OpenRouter likely selected a GPT-5.x model)"
+                $body.Remove('max_tokens')
+                $body.Remove('temperature')
+                $body['max_completion_tokens'] = $MaxTokens
+                $jsonBody = $body | ConvertTo-Json -Depth 10
+                $retried = $true
+                continue
+            }
+
+            if ($statusCode -and $errorDetail) {
+                throw "OpenRouter API request failed (HTTP $statusCode): $errorDetail"
+            }
+            elseif ($statusCode) {
+                throw "OpenRouter API request failed (HTTP $statusCode)"
+            }
+            else {
+                throw "OpenRouter API request failed: $_"
+            }
         }
     }
 
@@ -310,7 +323,6 @@ function Test-IsChatScreenshot {
         [string]$ApiKey,
         [string]$Model,
         [string[]]$Models,
-        [bool]$IsGpt5,
         [string]$Base64Image,
         [string]$Detail
     )
@@ -339,8 +351,7 @@ function Test-IsChatScreenshot {
             -ApiKey $ApiKey `
             -Model $Model `
             -Models $Models `
-                -MaxTokens 50 `
-            -IsGpt5 $IsGpt5 `
+            -MaxTokens 50 `
             -Messages $classifyMessages
         return ($result.Content.Trim().ToUpper() -like 'YES*')
     }
@@ -398,7 +409,6 @@ else {
         -ApiKey $ApiKey `
         -Model $Model `
         -Models $Models `
-        -IsGpt5 $isGpt5 `
         -Base64Image $firstImageB64 `
         -Detail $detail
     Write-Verbose "Chat screenshot auto-detected: $useChatMode"
@@ -498,7 +508,6 @@ foreach ($imagePath in $Images) {
         -Model $Model `
         -Models $Models `
         -MaxTokens $MaxTokens `
-        -IsGpt5 $isGpt5 `
         -Messages $messages.ToArray()
 
     Write-Verbose "Page $pageIndex | Selected: $($result.Model) | Cost: $('{0:N4}' -f $result.Cost) USD"
