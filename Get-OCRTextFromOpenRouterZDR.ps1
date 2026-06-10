@@ -278,10 +278,11 @@ function Invoke-OpenRouterChat {
                 }
             }
 
-            # Retry with max_completion_tokens if the error mentions max_tokens
-            if (-not $retried -and $statusCode -eq 400 -and
-                $errorDetail -match 'max_tokens|max_completion_tokens') {
-                Write-Verbose "Retrying with max_completion_tokens (OpenRouter likely selected a GPT-5.x model)"
+            # Retry with max_completion_tokens on any 400 -- the error detail
+            # from the response stream is often empty on PS 5.1, so we cannot
+            # reliably check what the API complained about.
+            if (-not $retried -and $statusCode -eq 400) {
+                Write-Verbose "Retrying with max_completion_tokens (OpenRouter may have selected a GPT-5.x model)"
                 $body.Remove('max_tokens')
                 $body.Remove('temperature')
                 $body['max_completion_tokens'] = $MaxTokens
