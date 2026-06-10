@@ -53,9 +53,9 @@
 
 .PARAMETER Models
     Optional. An array of model IDs for OpenRouter to try in order. The first
-    available model is used; others serve as fallbacks. Defaults to Gemini 3.1 Pro,
-    Claude Sonnet 4.6, Gemini 2.5 Pro, and GPT-5.5. Ignored when -Model is used
-    instead.
+    available model is used; others serve as fallbacks. Defaults to Gemini 3.1 Pro
+    Preview, Claude Sonnet 4.6, Gemini 2.5 Pro, and GPT-5.5. Ignored when -Model
+    is used instead.
 
 .PARAMETER Cheapest
     Optional. Route to the least expensive model from -Models instead of using
@@ -120,7 +120,7 @@
     .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png
 
     Routes to the best available model using the default model list
-    (Gemini 3.1 Pro, Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.5).
+    (Gemini 3.1 Pro Preview, Claude Sonnet 4.6, Gemini 2.5 Pro, GPT-5.5).
 
 .EXAMPLE
     .\Get-OCRTextFromOpenRouter.ps1 -Images scan.png -Models "openai/gpt-5.5", "anthropic/claude-sonnet-4"
@@ -149,7 +149,7 @@ param(
 
     [Parameter()]
     [string[]]$Models = @(
-        'google/gemini-3.1-pro'
+        'google/gemini-3.1-pro-preview'
         'anthropic/claude-sonnet-4.6'
         'google/gemini-2.5-pro'
         'openai/gpt-5.5'
