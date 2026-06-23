@@ -11,6 +11,7 @@
   - [Multi-page documents](#multi-page-documents)
   - [Saving to a file](#saving-to-a-file)
   - [Choosing a model](#choosing-a-model)
+  - [OpenRouter-specific options](#openrouter-specific-options)
   - [Verbose output](#verbose-output)
 - [Parameters](#parameters)
 - [Output format](#output-format)
@@ -20,7 +21,8 @@
   - [Non-English text](#non-english-text)
 - [Chat transcript mode](#chat-transcript-mode)
 - [Privacy and data retention](#privacy-and-data-retention)
-  - [What the script does](#what-the-script-does)
+  - [What the OpenAI script does](#what-the-openai-script-does)
+  - [What the OpenRouter script does](#what-the-openrouter-script-does)
   - [What cannot be eliminated via API parameters](#what-cannot-be-eliminated-via-api-parameters)
 - [Known limitations](#known-limitations)
 
@@ -28,11 +30,21 @@
 
 ## Overview
 
-`Get-OCRTextFromGPT.ps1` converts document images and chat screenshots to
-markdown by sending them to an OpenAI vision model. Multiple images are
-treated as sequential pages of one document (or sequential scrolls of one
-conversation) -- context carries forward so the model can handle elements
-that span page boundaries.
+This repository contains two PowerShell scripts that convert document images and
+chat screenshots to markdown by sending them to a vision-capable LLM. Multiple
+images are treated as sequential pages of one document (or sequential scrolls
+of one conversation) -- context carries forward so the model can handle
+elements that span page boundaries.
+
+| Script                              | Backend                | Auth env var          |
+| ----------------------------------- | ---------------------- | --------------------- |
+| `Get-OCRTextFromGPT.ps1`            | OpenAI Chat Completions | `OPENAI_API_KEY`      |
+| `Get-OCRTextFromOpenRouterZDR.ps1`  | OpenRouter (ZDR)       | `OPENROUTER_API_KEY`  |
+
+The two scripts share their core implementation via the `Get-OCRTextFromGPT.Helpers.psm1`
+module. The OpenRouter script adds model routing across multiple providers
+(Gemini, Claude, GPT-5.5 when available), automatic cost tracking, and an
+optional price-based sort.
 
 Output follows these conventions:
 
@@ -53,15 +65,20 @@ Output follows these conventions:
   PowerShell 7+.
 - **.NET Framework 4.x** (included with PowerShell 5.1 on Windows). Required
   for `System.Drawing`, which is used to strip EXIF metadata from images.
-- **An OpenAI API key** with access to a vision-capable model (`gpt-5.5` by
-  default). Set the `OPENAI_API_KEY` environment variable or pass the key via
-  `-ApiKey`.
+- **An API key** for whichever backend you intend to use:
+  - For `Get-OCRTextFromGPT.ps1`: an OpenAI API key with access to a
+    vision-capable model (`gpt-5.5` by default). Set `OPENAI_API_KEY` or pass
+    it via `-ApiKey`.
+  - For `Get-OCRTextFromOpenRouterZDR.ps1`: an OpenRouter API key with
+    access to a vision-capable model. Set `OPENROUTER_API_KEY` or pass it
+    via `-ApiKey`.
 
 ---
 
 ## Installation
 
-Copy `Get-OCRTextFromGPT.ps1` to a location of your choice. No module
+Copy the relevant script (and its companion `.psm1` helper and `prompts.json`,
+which must live in the same directory) to a location of your choice. No module
 installation or additional dependencies are required.
 
 If PowerShell execution policy prevents running scripts, either unblock the
@@ -84,7 +101,8 @@ the repository alongside the script. Running `Add-ContextMenuItems.cmd` (as a
 normal user -- no elevation required) registers two entries under
 `HKCU\Software\Classes\SystemFileAssociations\image\shell`, which adds them to
 the right-click menu for all image file types recognized by Windows (PNG, JPEG,
-GIF, WebP, etc.):
+GIF, WebP, etc.). The context menu invokes `Get-OCRTextFromGPT.ps1`
+specifically:
 
 | Menu item           | Equivalent command-line flags |
 | ------------------- | ----------------------------- |
@@ -105,7 +123,11 @@ To remove the entries, run `Remove-ContextMenuItems.cmd`.
 ### Basic usage
 
 ```powershell
+# OpenAI backend (default model: gpt-5.5)
 .\Get-OCRTextFromGPT.ps1 scan.png
+
+# OpenRouter backend (default model list: see OpenRouter-specific options)
+.\Get-OCRTextFromOpenRouterZDR.ps1 scan.png
 ```
 
 Converts a single image and writes the markdown to stdout.
@@ -142,17 +164,49 @@ in UTF-8 without BOM for cross-tool compatibility.
 .\Get-OCRTextFromGPT.ps1 scan.png -Model gpt-4o -MaxTokens 2048
 ```
 
-Supported model families:
+Supported model families (OpenAI script):
 
 | Family  | Example IDs              | Notes                                              |
 | ------- | ------------------------ | -------------------------------------------------- |
 | GPT-5.5 | `gpt-5.5`, `gpt-5.5-...` | Default. `detail: original` (6000px, 10000 tiles). |
 | GPT-5.x | `gpt-5.4`, `gpt-5-mini`  | `detail: high`. No temperature/penalty params.     |
 | GPT-4o  | `gpt-4o`, `gpt-4.1`      | `detail: high`. Supports temperature.              |
+| o-series| `o1`, `o3`, `o4`         | `detail: high`. No temperature/penalty params.     |
 
 The script automatically detects the model family and sends the correct
 parameter set for each (`max_completion_tokens` vs `max_tokens`, presence or
 absence of `temperature`).
+
+### OpenRouter-specific options
+
+The OpenRouter script accepts either a single model ID via `-Model` or an
+ordered fallback list via `-Models`. The first available model is used; the
+rest serve as fallbacks when the lead model is unavailable.
+
+```powershell
+# Use the default model list (Gemini 3.1 Pro Preview -> Claude Sonnet 4.6 -> Gemini 2.5 Pro)
+.\Get-OCRTextFromOpenRouterZDR.ps1 scan.png
+
+# Specify a custom fallback list
+.\Get-OCRTextFromOpenRouterZDR.ps1 scan.png -Models "openai/gpt-5.5", "anthropic/claude-sonnet-4"
+
+# Force a single model
+.\Get-OCRTextFromOpenRouterZDR.ps1 scan.png -Model "anthropic/claude-sonnet-4.6"
+
+# Route to the cheapest available model from the fallback list
+.\Get-OCRTextFromOpenRouterZDR.ps1 scan.png -Cheapest
+```
+
+Notes:
+
+- `-Model` overrides `-Models` when both are specified.
+- GPT-5.5 is not yet available on OpenRouter and is not included in the
+  default fallback list.
+- With `-Cheapest`, OpenRouter sorts the supplied `-Models` list by price and
+  picks the least expensive option that responds.
+
+Each completed page prints the selected model and cost to the verbose stream.
+A total cost summary is printed at the end of the run.
 
 ### Verbose output
 
@@ -161,21 +215,40 @@ absence of `temperature`).
 ```
 
 Prints per-image progress and model configuration to the verbose stream
-without affecting the markdown on stdout.
+without affecting the markdown on stdout. The OpenRouter script additionally
+prints per-page and total cost in the verbose stream.
 
 ---
 
 ## Parameters
 
+Parameters shared by both scripts are listed first. OpenAI-only and
+OpenRouter-only parameters are listed in their respective subsections.
+
 | Parameter      | Type       | Default          | Description                                                                                           |
 | -------------- | ---------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
 | `-Images`      | `string[]` | _(required)_     | One or more image paths (PNG, JPEG, GIF, WebP). Positional (no name needed in position 0).            |
 | `-OutputPath`  | `string`   | _(none)_         | If set, also writes the markdown to this file (UTF-8, no BOM).                                        |
-| `-ApiKey`      | `string`   | `OPENAI_API_KEY` | OpenAI API key. Overrides the environment variable.                                                   |
-| `-Model`       | `string`   | `gpt-5.5`        | Vision-capable chat completions model. See model table above.                                         |
+| `-ApiKey`      | `string`   | env var          | API key. Overrides the environment variable.                                                         |
+| `-Model`       | `string`   | _(varies)_       | Vision-capable chat completions model. See model table above.                                         |
 | `-MaxTokens`   | `int`      | `4096`           | Maximum tokens per page response. Increase for very dense documents, decrease to reduce cost.         |
 | `-ChatMode`    | `switch`   | _(off)_          | Forces chat transcript mode. Skips auto-detection. See [Chat transcript mode](#chat-transcript-mode). |
+| `-Speaker`     | `string`   | _(none)_         | Chat mode only. Replaces the "You" speaker label with this name. See [Chat transcript mode](#chat-transcript-mode). |
 | `-ToClipboard` | `switch`   | _(off)_          | Copies the final markdown to the system clipboard in addition to stdout.                              |
+
+### OpenAI script (`Get-OCRTextFromGPT.ps1`)
+
+| Parameter  | Type     | Default   | Description                                  |
+| ---------- | -------- | --------- | -------------------------------------------- |
+| `-Model`   | `string` | `gpt-5.5` | OpenAI model ID. Must support vision inputs. |
+
+### OpenRouter script (`Get-OCRTextFromOpenRouterZDR.ps1`)
+
+| Parameter   | Type       | Default                                              | Description                                                                                          |
+| ----------- | ---------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `-Model`    | `string`   | _(none)_                                             | A single OpenRouter model ID. Overrides `-Models` when specified.                                    |
+| `-Models`   | `string[]` | Gemini 3.1 Pro Preview, Claude Sonnet 4.6, Gemini 2.5 Pro | Ordered fallback list. OpenRouter uses the first available model; the rest are fallbacks.            |
+| `-Cheapest` | `switch`   | _(off)_                                              | Route to the least expensive model from `-Models`. Ignored when `-Model` is used instead of `-Models`. |
 
 ---
 
@@ -209,15 +282,15 @@ Non-text elements are described inline:
 ### Non-English text
 
 When a complete paragraph or block is written entirely in a non-English
-language, it appears verbatim followed immediately by a translation blockquote:
+language, it appears verbatim followed immediately by a translation blockquote
+in italics:
 
 ```markdown
 Sehr geehrte Damen und Herren, wir mochten Sie uber die Anderungen
 in unserer Datenschutzrichtlinie informieren.
 
-> \_[Machine translation from German: Dear Sir or Madam, we would like
->
-> > to inform you about the changes to our privacy policy.]\_
+> *[Machine translation from German: Dear Sir or Madam, we would like
+> to inform you about the changes to our privacy policy.]*
 ```
 
 Single words, loan words, proper nouns, and short foreign-language expressions
@@ -243,6 +316,17 @@ To process multiple sequential scrolls of the same conversation:
 ```powershell
 .\Get-OCRTextFromGPT.ps1 teams-p1.png, teams-p2.png, teams-p3.png -OutputPath transcript.md
 ```
+
+### Renaming the local user
+
+Chat applications usually label the local user as "You". Use `-Speaker` to
+replace that label with a real name throughout the transcript:
+
+```powershell
+.\Get-OCRTextFromGPT.ps1 teams-p1.png, teams-p2.png -ChatMode -Speaker "John Doe"
+```
+
+`-Speaker` has no effect on document mode.
 
 ### Transcript format
 
@@ -309,7 +393,7 @@ yeah, be there in 5
 
 ## Privacy and data retention
 
-### What the script does
+### What the OpenAI script does
 
 Before transmitting any image, the script re-encodes it as PNG via
 `System.Drawing`. This strips all EXIF metadata client-side -- GPS coordinates,
@@ -327,6 +411,25 @@ Each API request includes:
   (OS, architecture, runtime version) from the request.
 - No `user`, `safety_identifier`, `metadata`, or `prompt_cache_key` fields --
   avoids attaching identity or caching hints to the request.
+
+### What the OpenRouter script does
+
+The OpenRouter script re-encodes images as PNG to strip EXIF metadata, exactly
+as the OpenAI script does. Each API request includes:
+
+- `provider.zdr: true` -- asks OpenRouter to enforce Zero Data Retention on
+  participating providers. Honored only where the underlying provider supports
+  ZDR.
+- `HTTP-Referer` -- set to the project URL so OpenRouter can attribute
+  traffic. OpenRouter requires this header for its service.
+- `X-Title` -- identifies the client application to OpenRouter.
+- No `user`, `safety_identifier`, `metadata`, or `prompt_cache_key` fields --
+  avoids attaching identity or caching hints to the request.
+
+Because OpenRouter routes to many providers, the actual retention policy
+depends on which provider serves the request. ZDR coverage varies by model and
+by provider. The OpenRouter response includes the `model` actually used so the
+caller can see which provider handled each page.
 
 ### What cannot be eliminated via API parameters
 
@@ -369,7 +472,11 @@ change the endpoint and API key.
   and verify the output.
 - **Token limits.** For very dense pages, 4096 output tokens may truncate the
   response. Increase `-MaxTokens` if content appears cut off.
-- **No automatic retry.** Any API error aborts the run immediately. Implement
-  retry logic in a wrapper script if needed.
+- **No automatic retry (OpenAI script).** Any API error aborts the run
+  immediately. Implement retry logic in a wrapper script if needed.
+- **Limited automatic retry (OpenRouter script).** On HTTP 400, the OpenRouter
+  script retries once with `max_completion_tokens` instead of `max_tokens` so
+  the request still succeeds if OpenRouter routes to a GPT-5.x or o-series
+  model. Other HTTP errors abort the run as in the OpenAI script.
 
 ---

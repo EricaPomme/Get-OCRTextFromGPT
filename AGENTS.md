@@ -15,7 +15,7 @@ Add-ContextMenuItems.cmd         Registers Windows Explorer right-click menu ent
 Remove-ContextMenuItems.cmd      Removes those entries
 ```
 
-The two entry-point scripts are near-identical copies that differ only in API endpoint, headers, and auth. The OpenRouter script adds `-Models` (array routing) and `-SortBy` parameters. Shared logic lives in the `.psm1` module.
+The two entry-point scripts share their core flow (image validation, EXIF stripping, chat auto-detection, multi-page context, post-processing) but diverge at the API call. The OpenAI script sends `max_completion_tokens` vs `max_tokens` based on `Test-IsGpt5Model`, and the OpenRouter script delegates model selection to OpenRouter via either a single `-Model` or an ordered fallback list `-Models`. The OpenRouter script additionally supports `-Cheapest` (price-sorted routing), automatic 400 retry with `max_completion_tokens` for GPT-5.x / o-series selections, per-page cost logging via the response `usage.cost`, and a total cost summary on completion. Both scripts accept `-Speaker` (chat mode only) to replace the "You" sender label. Shared logic lives in the `.psm1` module.
 
 ## Key Gotchas
 
@@ -30,6 +30,12 @@ The two entry-point scripts are near-identical copies that differ only in API en
 - **Multi-page context carries forward**: Each page's assistant response is appended to the messages array as an `assistant` message before the next page is processed. This is how cross-page tables/lists work.
 
 - **Chat auto-detection** makes a separate lightweight API call on the first image with the `ChatClassification` prompt (returns YES/NO). Errors silently fall back to document mode.
+
+- **OpenRouter 400 retry**: `Invoke-OpenRouterChat` in the OpenRouter script first sends `max_tokens`; if the response is HTTP 400 it removes that and `temperature`, re-sends with `max_completion_tokens`, and retries once. This handles the case where OpenRouter routed the call to a GPT-5.x or o-series model that rejects `max_tokens`. PS 5.1 often cannot read the 400 body, so retry triggers on any 400 regardless of error detail.
+
+- **OpenRouter cost tracking**: Each `Invoke-OpenRouterChat` return is a hashtable with `Content`, `Model` (the model OpenRouter actually used), and `Cost` (from `response.usage.cost`). The main loop accumulates `Cost` into `$totalCost` and prints per-page and total cost to the verbose stream.
+
+- **OpenRouter ZDR**: The OpenRouter request body sets `provider.zdr = $true`. Effective ZDR coverage depends on whether the routed provider participates in OpenRouter's ZDR program. The OpenRouter script also sets `HTTP-Referer` and `X-Title` headers (required by OpenRouter); it does not set any of the OpenAI privacy headers.
 
 - **Relative timestamp resolution** in chat mode uses the current system date/time. The prompt template in `prompts.json` has positional format placeholders `{0}`-`{4}` filled at runtime.
 
