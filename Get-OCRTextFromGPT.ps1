@@ -59,7 +59,7 @@
 
 .PARAMETER Speaker
     Optional. Specifies the name of the local user in chat transcripts. When
-    provided, messages that would normally be labeled "You" are instead labeled
+    provided, messages that would normally be labelled "You" are instead labelled
     with this name (e.g. "John Doe" instead of "You"). Only applies in chat
     mode. Ignored when processing documents.
 

@@ -405,8 +405,8 @@ Each API request includes:
 - `store: false` -- prevents the completion from being stored in OpenAI's
   Stored Completions API (used for distillation and evals). This is the default
   but is set explicitly for clarity.
-- `X-OpenAI-No-Store: true` header -- requests Zero Data Retention behavior.
-  Honored only for enterprise accounts with a ZDR agreement.
+- `X-OpenAI-No-Store: true` header -- requests Zero Data Retention behaviour.
+  Honoured only for enterprise accounts with a ZDR agreement.
 - `X-Stainless-*: private` headers -- suppresses SDK environment telemetry
   (OS, architecture, runtime version) from the request.
 - No `user`, `safety_identifier`, `metadata`, or `prompt_cache_key` fields --
@@ -418,7 +418,7 @@ The OpenRouter script re-encodes images as PNG to strip EXIF metadata, exactly
 as the OpenAI script does. Each API request includes:
 
 - `provider.zdr: true` -- asks OpenRouter to enforce Zero Data Retention on
-  participating providers. Honored only where the underlying provider supports
+  participating providers. Honoured only where the underlying provider supports
   ZDR.
 - `HTTP-Referer` -- set to the project URL so OpenRouter can attribute
   traffic. OpenRouter requires this header for its service.
